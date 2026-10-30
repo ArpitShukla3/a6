@@ -2,6 +2,8 @@
 
 This service keeps MoveInSync's employee records correct while an HR system pushes changes that arrive twice, out of order, with bad data, or cut short. It is the solution to Case Study 5 (Advanced Track).
 
+**GitHub repository:** [github.com/ArpitShukla3/a6](https://github.com/ArpitShukla3/a6)
+
 Built with Java 21, Spring Boot 3.3, PostgreSQL 16, Redpanda (Kafka API), Micrometer/Prometheus and Testcontainers.
 
 ```bash
@@ -13,7 +15,49 @@ docker compose up --build     # postgres + redpanda + app + prometheus
 - Metrics: http://localhost:8080/actuator/prometheus
 - Prometheus (with alert rules): http://localhost:9090
 
-The high-level design, with the labelled data-flow diagram and architectural trade-offs, is in [docs/hld.md](docs/hld.md). The design note, with diagrams and the failure-mode table, is in [docs/design-note.md](docs/design-note.md).
+The design note, with the labelled data-flow diagram, the reconciliation sequence diagram and the failure-mode table, is in [docs/design-note.md](docs/design-note.md).
+
+---
+
+## Architecture at a glance
+
+```mermaid
+flowchart TB
+  HR["HR system"]
+  ADM["Transport admin"]
+  OP["Operator"]
+  EMP["Employee"]
+
+  subgraph App["roster-sync (Spring Boot 3.3, Java 21)"]
+    SEC["security/<br/>JWT, tenant from token"]
+    API["api/<br/>REST controllers"]
+    SVC["service/<br/>orchestration + transactions"]
+    DOM["domain/<br/>VersionGate, Merger,<br/>Differ, SafetyBrake"]
+    REPO["repository/<br/>tenant-scoped SQL"]
+    OUT["outbox/<br/>single relay"]
+    OBS["observability/<br/>metrics, logs"]
+    CACHE[("Caffeine<br/>office codes")]
+  end
+
+  PG[("PostgreSQL 16")]
+  DISK[("Temp disk<br/>bucket spill")]
+  RP[("Redpanda<br/>roster.employee.changed")]
+  PROM["Prometheus<br/>+ alerts"]
+
+  HR & ADM & OP & EMP -- "HTTPS + JWT" --> SEC
+  SEC --> API --> SVC
+  SVC --> DOM
+  SVC --> REPO --> PG
+  DOM -.-> CACHE
+  DOM -- "spill" --> DISK
+  OUT -- "poll" --> PG
+  OUT -- "publish" --> RP
+  OBS -- "scrape" --> PROM
+```
+
+- **Write path:** request → validator chain → row lock → `VersionGate` → `EmployeeMerger` → employee row, outbox event and booking side effects, all in **one transaction per record**.
+- **Nightly path:** the CSV is streamed to disk in hash buckets, digests are compared with the DB, only differing buckets are drilled into, and `SafetyBrake` decides whether the run applies or waits for an operator.
+- **Out path:** the outbox relay publishes committed changes to Redpanda in order, keyed by employee.
 
 ---
 
@@ -298,4 +342,3 @@ src/main/java/com/moveinsync/roster/
 - **Reconciliation deactivations.** They don't bump the HR version, and they can be undone (§4).
 - **Rejected rows.** A rejected row with a readable ID counts as present, and a third brake rule trips on the rejection rate.
 - **Cut** from the plan: the employee read cache, Postgres RLS, the absolute-cap brake rule, Postman and k6. A Java HTTP load benchmark replaces k6.
-# a6
