@@ -1,0 +1,32 @@
+groups:
+  - name: roster-sync
+    rules:
+      - alert: RosterSafetyBrakeTripped
+        expr: roster_reconciliation_held_runs > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Nightly roster run held by the safety brake - nobody was deactivated. Review GET /api/v1/reconciliation/runs and approve or reject."
+      - alert: RosterOutboxLagHigh
+        expr: roster_outbox_oldest_age_seconds > 60
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Change events are not reaching the broker (oldest unpublished event > 60s). Check broker health and roster_outbox_publish_failures_total."
+      - alert: RosterOutboxPublishFailures
+        expr: rate(roster_outbox_publish_failures_total[5m]) > 0
+        for: 5m
+        labels: {severity: ticket}
+      - alert: RosterRejectionRateHigh
+        expr: |
+          sum(rate(roster_ingest_events_total{outcome="REJECTED"}[10m]))
+            / clamp_min(sum(rate(roster_ingest_events_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "More than 5% of HR records rejected. See roster_ingest_rejections_total by code."
+      - alert: RosterIngestFailures
+        expr: rate(roster_ingest_events_total{outcome="FAILED"}[5m]) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Records failing with infrastructure errors (database?). HR retries are safe."

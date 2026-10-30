@@ -1,0 +1,60 @@
+# One command: docker compose up --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: roster
+      POSTGRES_USER: roster
+      POSTGRES_PASSWORD: roster
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roster -d roster"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  app:
+    build: .
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/roster
+      DB_USER: roster
+      DB_PASSWORD: roster
+      KAFKA_BOOTSTRAP: redpanda:9092
+      ROSTER_OUTBOX_PUBLISHER: kafka
+      ROSTER_DEV_TOKENS: "true"            # demo only: enables POST /dev/token
+      ROSTER_JWT_SECRET: demo-secret-please-change-0123456789abcdef
+      ROSTER_DATA_DIR: /data
+      ROSTER_BRAKE_MISSING_RATIO: "0.30"
+    ports: ["8080:8080"]
+    volumes: ["roster-data:/data"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redpanda: {condition: service_healthy}
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro,z
+    ports: ["9090:9090"]
+    depends_on: [app]
+
+volumes:
+  roster-data:
